@@ -1,9 +1,7 @@
 name: PR Integrity Checks
 
 on:
-  pull_request:
-    branches: [ main, master, develop ]
-    types: [opened, edited, synchronize]
+  workflow_call:
 
 jobs:
   compliance:
