@@ -1,0 +1,215 @@
+name: Build (Gradle)
+
+on:
+  workflow_call:
+
+    inputs:
+      java-version:
+        description: Java version
+        required: false
+        default: "21"
+        type: string
+
+      distribution:
+        description: JDK Distribution
+        required: false
+        default: "temurin"
+        type: string
+
+      build-command:
+        description: Gradle build command
+        required: false
+        default: "clean build -x test"
+        type: string
+
+      upload-artifact:
+        description: Upload build artifacts
+        required: false
+        default: true
+        type: boolean
+
+      artifact-name:
+        description: Artifact name
+        required: false
+        default: gradle-build
+        type: string
+
+      artifact-path:
+        description: Build artifact path
+        required: false
+        default: build/libs/**
+        type: string
+
+      runner:
+        description: GitHub runner
+        required: false
+        default: ubuntu-latest
+        type: string
+
+      working-directory:
+        description: Project working directory
+        required: false
+        default: .
+        type: string
+
+      artifact-retention-days:
+        description: Artifact retention
+        required: false
+        default: 60
+        type: number
+
+    outputs:
+      artifact-name:
+        description: Uploaded artifact name
+        value: ${{ jobs.build.outputs.artifact-name }}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-gradle-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+
+  build:
+    name: Gradle Build
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 30
+    outputs:
+      artifact-name: ${{ steps.outputs.outputs.artifact-name }}
+
+    steps:
+
+      ####################################################################
+      # Checkout
+      ####################################################################
+
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      ####################################################################
+      # Java
+      ####################################################################
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: ${{ inputs.distribution }}
+          java-version: ${{ inputs.java-version }}
+
+      - name: Verify Java
+        run: |
+          set -Eeuo pipefail
+          java -version
+          javac -version
+
+      ####################################################################
+      # Validate Wrapper
+      ####################################################################
+
+      - name: Validate Gradle Wrapper
+        uses: gradle/actions/wrapper-validation@v4
+
+      ####################################################################
+      # Setup Gradle
+      ####################################################################
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Verify Gradle
+        run: |
+          set -Eeuo pipefail
+          ./gradlew --version
+
+      ####################################################################
+      # Permissions
+      ####################################################################
+
+      - name: Grant Execute Permission
+        run: |
+          set -Eeuo pipefail
+
+          test -f gradlew || {
+            echo "::error::gradlew not found."
+            exit 1
+          }
+          chmod +x gradlew
+
+      ####################################################################
+      # Build
+      ####################################################################
+
+      - name: Build Project
+        working-directory: ${{ inputs.working-directory }}
+        run: |
+          set -Eeuo pipefail
+          ./gradlew \
+            --no-daemon \
+            --stacktrace \
+            --warning-mode=all \
+            ${{ inputs.build-command }}
+
+      ####################################################################
+      # Upload Artifact
+      ####################################################################
+
+      - name: Upload Build Artifact
+        if: inputs.upload-artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.artifact-name }}
+          path: ${{ inputs.artifact-path }}
+          if-no-files-found: error
+          retention-days: ${{ inputs.artifact-retention-days }}
+
+
+      - name: Upload Build Reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gradle-build-reports
+          retention-days: ${{ inputs.artifact-retention-days }}
+          if-no-files-found: ignore
+          path: |
+            build/reports/**
+            build/test-results/**
+
+      ####################################################################
+      # Outputs
+      ####################################################################
+
+      - name: Set Outputs
+        id: outputs
+        run: |
+          echo "artifact-name=${{ inputs.artifact-name }}" >> "$GITHUB_OUTPUT"
+
+      ####################################################################
+      # GitHub Summary
+      ####################################################################
+
+      - name: Publish Summary
+        if: always()
+        run: |
+          {
+            echo "# Gradle Build"
+            echo ""
+            echo "| Property | Value |"
+            echo "|----------|-------|"
+            echo "| Java | ${{ inputs.java-version }} |"
+            echo "| Distribution | ${{ inputs.distribution }} |"
+            echo "| Build Command | \`${{ inputs.build-command }}\` |"
+            echo "| Artifact | ${{ inputs.artifact-name }} |"
+            echo "| Upload Artifact | ${{ inputs.upload-artifact }} |"
+            echo "| Repository | ${{ github.repository }} |"
+            echo "| Branch | ${{ github.ref_name }} |"
+            echo "| Commit | ${{ github.sha }} |"
+            echo "| Runner | ${{ runner.name }} |"
+            echo "| Workflow Run | https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }} |"
+            echo "| Status | ${{ job.status }} |"
+          } >> "$GITHUB_STEP_SUMMARY"
