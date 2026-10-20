@@ -5,12 +5,12 @@ on:
 
 jobs:
   compliance:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - name: 🌿 Check Branch Name
         run: |
           BRANCH_NAME="${{ github.head_ref }}"
-          if [[ ! $BRANCH_NAME =~ ^(feat|feature|fix|docs|refactor|chore|update|upgrade)/ ]]; then
+          if [[ ! $BRANCH_NAME =~ ^(feat|feature|fix|docs|refactor|chore|update|upgrade|release|wip)/ ]]; then
             echo "ERROR: Invalid branch name '$BRANCH_NAME'."
             exit 1
           fi
@@ -18,7 +18,7 @@ jobs:
       - name: 🏷️ Check PR Title
         run: |
           PR_TITLE="${{ github.event.pull_request.title }}"
-          if [[ ! $PR_TITLE =~ ^([A-Z]+-[0-9]+:|feat:|feature:|fix:|docs:|refactor:|chore:|update:|upgrade:).* ]]; then
+          if [[ ! $PR_TITLE =~ ^([A-Z]+-[0-9]+:|feat:|feature:|fix:|docs:|refactor:|chore:|update:|upgrade:|release:|wip:).* ]]; then
             echo "ERROR: Invalid PR Title '$PR_TITLE'."
             exit 1
           fi
