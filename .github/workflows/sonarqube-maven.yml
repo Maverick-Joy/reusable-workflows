@@ -74,11 +74,11 @@ on:
         default: "target/surefire-reports"
         type: string
 
-      jacoco-report-path:
-        description: JaCoCo XML report
-        required: false
-        default: "target/site/jacoco/jacoco.xml"
-        type: string
+#      jacoco-report-path:
+#        description: JaCoCo XML report
+#        required: false
+#        default: "target/site/jacoco/jacoco.xml"
+#        type: string
 
       timeout:
         description: Maximum wait time for SonarQube analysis, in seconds
@@ -138,32 +138,32 @@ jobs:
         with:
           scanner-version: ${{ inputs.sonar-scanner-version }}
 
-      - name: Build & Generate JaCoCo Report
-        shell: bash
-        env:
-          MAVEN_COMMAND: ${{ inputs.maven-command }}
-          JACOCO_REPORT_PATH: ${{ inputs.jacoco-report-path }}
-        run: |
-          set -Eeuo pipefail
-
-          if [[ ! -f ./mvnw ]]; then
-            echo "::error::Maven wrapper (mvnw) was not found in the repository root."
-            exit 1
-          fi
-
-          chmod +x ./mvnw
-          read -r -a maven_args <<< "$MAVEN_COMMAND"
-          if (( ${#maven_args[@]} == 0 )); then
-            echo "::error::maven-command must contain at least one Maven goal or argument."
-            exit 1
-          fi
-
-          ./mvnw "${maven_args[@]}"
-
-          if [[ ! -f "$JACOCO_REPORT_PATH" ]]; then
-            echo "::error::JaCoCo XML report was not generated at '$JACOCO_REPORT_PATH'. Configure the Maven JaCoCo plugin to generate this report during the build."
-            exit 1
-          fi
+#      - name: Build & Generate JaCoCo Report
+#        shell: bash
+#        env:
+#          MAVEN_COMMAND: ${{ inputs.maven-command }}
+#          JACOCO_REPORT_PATH: ${{ inputs.jacoco-report-path }}
+#        run: |
+#          set -Eeuo pipefail
+#
+#          if [[ ! -f ./mvnw ]]; then
+#            echo "::error::Maven wrapper (mvnw) was not found in the repository root."
+#            exit 1
+#          fi
+#
+#          chmod +x ./mvnw
+#          read -r -a maven_args <<< "$MAVEN_COMMAND"
+#          if (( ${#maven_args[@]} == 0 )); then
+#            echo "::error::maven-command must contain at least one Maven goal or argument."
+#            exit 1
+#          fi
+#
+#          ./mvnw "${maven_args[@]}"
+#
+#          if [[ ! -f "$JACOCO_REPORT_PATH" ]]; then
+#            echo "::error::JaCoCo XML report was not generated at '$JACOCO_REPORT_PATH'. Configure the Maven JaCoCo plugin to generate this report during the build."
+#            exit 1
+#          fi
 
       - name: Run SonarScanner
         env:
@@ -177,7 +177,7 @@ jobs:
           SONAR_BINARIES_DIRECTORY: ${{ inputs.binaries-directory }}
           SONAR_TEST_BINARIES_DIRECTORY: ${{ inputs.test-binaries-directory }}
           SONAR_JUNIT_REPORT_PATH: ${{ inputs.junit-report-path }}
-          SONAR_JACOCO_REPORT_PATH: ${{ inputs.jacoco-report-path }}
+#          SONAR_JACOCO_REPORT_PATH: ${{ inputs.jacoco-report-path }}
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -258,12 +258,12 @@ jobs:
           name: maven-test-report
           path: ${{ inputs.junit-report-path }}/**
 
-      - name: Upload JaCoCo Report
-        if: always()
-        uses: actions/upload-artifact@v7.0.1
-        with:
-          name: maven-jacoco-report
-          path: ${{ inputs.jacoco-report-path }}
+#      - name: Upload JaCoCo Report
+#        if: always()
+#        uses: actions/upload-artifact@v7.0.1
+#        with:
+#          name: maven-jacoco-report
+#          path: ${{ inputs.jacoco-report-path }}
 
       - name: GitHub Step Summary
         if: always()
@@ -273,7 +273,7 @@ jobs:
           PROJECT_NAME: ${{ inputs.sonar-project-name }}
           PROJECT_KEY: ${{ inputs.sonar-project-key }}
           JAVA_VERSION: ${{ inputs.java-version }}
-          JACOCO_REPORT_PATH: ${{ inputs.jacoco-report-path }}
+#          JACOCO_REPORT_PATH: ${{ inputs.jacoco-report-path }}
         run: |
           set -Eeuo pipefail
 
