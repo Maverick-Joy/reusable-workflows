@@ -46,7 +46,7 @@ runs:
         install_dir="$HOME/.sonar"
         scanner_dir="$install_dir/sonar-scanner"
         archive="/tmp/sonar-scanner-cli-${SCANNER_VERSION}-linux-x64.zip"
-        extracted_dir="/tmp/sonar-scanner-cli-${SCANNER_VERSION}-linux-x64"
+        extracted_dir="/tmp/sonar-scanner-${SCANNER_VERSION}-linux-x64"
         url="https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-${SCANNER_VERSION}-linux-x64.zip"
 
         mkdir -p "$install_dir"
