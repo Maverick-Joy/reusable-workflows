@@ -2,59 +2,81 @@ name: SonarQube Scan (Gradle)
 
 on:
   workflow_call:
-
     inputs:
       runner:
-        description: GitHub Actions runner
+        description: Linux x64 GitHub Actions runner
         required: false
         default: ubuntu-26.04
         type: string
 
       java-version:
-        description: Java Version
+        description: Java version
         required: false
         default: "21"
         type: string
 
       distribution:
-        description: JDK Distribution
+        description: JDK distribution
         required: false
         default: temurin
         type: string
 
       gradle-command:
-        description: Gradle command to execute
+        description: Gradle goals and arguments (space-separated; not a shell command)
         required: false
-#        default: clean test jacocoTestReport
         default: clean build jacocoTestReport
         type: string
 
       sonar-project-key:
-        description: Sonar Project Key
+        description: Sonar project key
         required: true
         type: string
 
       sonar-project-name:
-        description: Sonar Project Name
+        description: Sonar project name
         required: true
         type: string
 
-      sonar-sources:
-        description: Sonar Sources
+      sonar-organization:
+        description: SonarCloud organization (optional)
         required: false
-        default: src
+        default: ""
+        type: string
+
+      sonar-sources:
+        description: Main source directory relative to the working directory
+        required: false
+        default: src/main
         type: string
 
       sonar-tests:
-        description: Sonar Test Directories
+        description: Test source directory relative to the working directory
         required: false
         default: src/test
         type: string
 
       sonar-java-binaries:
-        description: Java compiled classes
+        description: Compiled main Java classes directory relative to the working directory
         required: false
         default: build/classes/java/main
+        type: string
+
+      sonar-java-test-binaries:
+        description: Compiled test Java classes directory relative to the working directory
+        required: false
+        default: build/classes/java/test
+        type: string
+
+      sonar-junit-report-path:
+        description: JUnit XML report directory relative to the working directory
+        required: false
+        default: build/test-results/test
+        type: string
+
+      sonar-jacoco-report-path:
+        description: JaCoCo XML report path relative to the working directory
+        required: false
+        default: build/reports/jacoco/test/jacocoTestReport.xml
         type: string
 
       sonar-exclusions:
@@ -64,25 +86,25 @@ on:
         type: string
 
       sonar-working-directory:
-        description: Working directory
+        description: Gradle project directory relative to the repository root
         required: false
         default: .
         type: string
 
       sonar-additional-args:
-        description: Additional sonar-scanner arguments
+        description: Additional SonarScanner arguments (space-separated)
         required: false
         default: ""
         type: string
 
       test-report-artifact-name:
-        description: Test Report Artifact Name
+        description: Test report artifact name
         required: false
         default: gradle-test-report
         type: string
 
       coverage-report-artifact-name:
-        description: Coverage Report Artifact Name
+        description: Coverage report artifact name
         required: false
         default: jacoco-report
         type: string
@@ -100,9 +122,21 @@ on:
         type: string
 
       fetch-depth:
-        description: Git fetch depth
+        description: Git fetch depth; use 0 for full history
         required: false
         default: 0
+        type: number
+
+      quality-gate-timeout:
+        description: Maximum wait time for SonarQube analysis, in seconds
+        required: false
+        default: 300
+        type: number
+
+      quality-gate-polling-interval:
+        description: Quality Gate polling interval in seconds
+        required: false
+        default: 5
         type: number
 
     secrets:
@@ -115,61 +149,73 @@ permissions:
   contents: read
 
 concurrency:
-  group: sonar-gradle-${{ github.workflow }}-${{ github.ref }}
+  group: sonar-gradle-${{ github.workflow }}-${{ inputs.sonar-project-key }}-${{ github.ref }}
   cancel-in-progress: true
-
-defaults:
-  run:
-    shell: bash
 
 jobs:
   sonarqube:
     name: SonarQube Analysis
     runs-on: ${{ inputs.runner }}
-    timeout-minutes: 45
-    env:
-      SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
-      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+    timeout-minutes: 90
 
     steps:
-
-      ###################################################################
-      # Validate Inputs
-      ###################################################################
-
-      - name: Validate Workflow Inputs
-        run: |
-          set -Eeuo pipefail
-          required_inputs=(
-            "${{ inputs.sonar-project-key }}"
-            "${{ inputs.sonar-project-name }}"
-            "${{ inputs.sonar-sources }}"
-            "${{ inputs.sonar-tests }}"
-            "${{ inputs.sonar-java-binaries }}"
-          )
-          for value in "${required_inputs[@]}"; do
-            if [ -z "$value" ]; then
-              echo "::error::One or more required workflow inputs are empty."
-              exit 1
-            fi
-          done
-          if [ ! -d "${{ inputs.sonar-working-directory }}" ]; then
-            echo "::error::Working directory '${{ inputs.sonar-working-directory }}' does not exist."
-            exit 1
-          fi   
-
-      ###################################################################
-      # Checkout
-      ###################################################################
-
       - name: Checkout Repository
         uses: actions/checkout@v7.0.1
         with:
           fetch-depth: ${{ inputs.fetch-depth }}
 
-      ###################################################################
-      # Java
-      ###################################################################
+      - name: Validate Workflow Inputs and Runner
+        shell: bash
+        env:
+          RUNNER_OS_NAME: ${{ runner.os }}
+          RUNNER_ARCH_NAME: ${{ runner.arch }}
+          WORKING_DIRECTORY: ${{ inputs.sonar-working-directory }}
+          SONAR_SOURCES: ${{ inputs.sonar-sources }}
+          SONAR_TESTS: ${{ inputs.sonar-tests }}
+          SONAR_BINARIES: ${{ inputs.sonar-java-binaries }}
+          SONAR_PROJECT_KEY: ${{ inputs.sonar-project-key }}
+          SONAR_PROJECT_NAME: ${{ inputs.sonar-project-name }}
+          SCANNER_VERSION: ${{ inputs.sonar-scanner-version }}
+          GATE_TIMEOUT: ${{ inputs.quality-gate-timeout }}
+          GATE_POLLING_INTERVAL: ${{ inputs.quality-gate-polling-interval }}
+          ARTIFACT_RETENTION_DAYS: ${{ inputs.artifact-retention-days }}
+        run: |
+          set -Eeuo pipefail
+
+          if [[ "$RUNNER_OS_NAME" != "Linux" || "$RUNNER_ARCH_NAME" != "X64" ]]; then
+            echo "::error::This workflow currently requires a Linux x64 runner because the shared SonarScanner setup installs the Linux x64 CLI."
+            exit 1
+          fi
+
+          if [[ ! -d "$WORKING_DIRECTORY" ]]; then
+            echo "::error::Gradle working directory '$WORKING_DIRECTORY' does not exist after checkout."
+            exit 1
+          fi
+
+          if [[ -z "$SONAR_PROJECT_KEY" || -z "$SONAR_PROJECT_NAME" || -z "$SONAR_SOURCES" || -z "$SONAR_BINARIES" ]]; then
+            echo "::error::Project key, project name, source directory, and binaries directory must not be empty."
+            exit 1
+          fi
+
+          if [[ "$SONAR_SOURCES" == "$SONAR_TESTS" || "$SONAR_SOURCES/" == "$SONAR_TESTS/"* || "$SONAR_TESTS/" == "$SONAR_SOURCES/"* ]]; then
+            echo "::error::Sonar source and test directories must not overlap."
+            exit 1
+          fi
+
+          if [[ ! "$SCANNER_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Invalid SonarScanner version: $SCANNER_VERSION"
+            exit 1
+          fi
+
+          if [[ ! "$GATE_TIMEOUT" =~ ^[1-9][0-9]*$ || ! "$GATE_POLLING_INTERVAL" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::Quality Gate timeout and polling interval must be positive whole numbers."
+            exit 1
+          fi
+
+          if [[ ! "$ARTIFACT_RETENTION_DAYS" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::Artifact retention days must be a positive whole number."
+            exit 1
+          fi
 
       - name: Setup Java
         uses: actions/setup-java@v5
@@ -177,351 +223,148 @@ jobs:
           distribution: ${{ inputs.distribution }}
           java-version: ${{ inputs.java-version }}
 
-      - name: Verify Java
-        run: |
-          java -version
-          javac -version
-
-      ###################################################################
-      # Validate Wrapper
-      ###################################################################
-
       - name: Validate Gradle Wrapper
         uses: gradle/actions/wrapper-validation@v4
-
-      ###################################################################
-      # Setup Gradle
-      ###################################################################
+        with:
+          gradle-wrapper-path: ${{ inputs.sonar-working-directory }}/gradle/wrapper/gradle-wrapper.properties
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Verify Gradle
+      - name: Verify Gradle Wrapper
+        shell: bash
+        working-directory: ${{ inputs.sonar-working-directory }}
         run: |
+          set -Eeuo pipefail
+
+          if [[ ! -f ./gradlew ]]; then
+            echo "::error::Gradle wrapper (gradlew) was not found in '$PWD'."
+            exit 1
+          fi
+
+          chmod +x ./gradlew
           ./gradlew --version
 
-      ###################################################################
-      # Permission
-      ###################################################################
-
-      - name: Grant Execute Permission
-        run: chmod +x gradlew
-
-      ###################################################################
-      # Build
-      ###################################################################
-          
-      - name: Build Project
+      - name: Build Project and Generate Reports
+        shell: bash
         working-directory: ${{ inputs.sonar-working-directory }}
+        env:
+          GRADLE_COMMAND: ${{ inputs.gradle-command }}
+          JACOCO_REPORT_PATH: ${{ inputs.sonar-jacoco-report-path }}
         run: |
           set -Eeuo pipefail
-          ./gradlew \
-          --no-daemon \
-          --stacktrace \
-          --warning-mode=all \
-          ${{ inputs.gradle-command }}
-#          ./gradlew ${{ inputs.gradle-command }}
-          
-      ###################################################################
-      # Verify Required Tools
-      ###################################################################
 
-      - name: Verify curl
-        run: |
-          set -Eeuo pipefail
-          if ! command -v curl >/dev/null 2>&1; then
-            echo "::error::curl is not installed."
+          read -r -a gradle_args <<< "$GRADLE_COMMAND"
+          if (( ${#gradle_args[@]} == 0 )); then
+            echo "::error::gradle-command must contain at least one Gradle task or argument."
             exit 1
           fi
 
-      - name: Verify unzip
-        run: |
-          set -Eeuo pipefail
-          if command -v unzip >/dev/null 2>&1; then
-            echo "unzip already installed."
-            unzip -v | head -1
-          else
-            echo "Installing unzip..."
-            sudo apt-get update
-            sudo apt-get install -y unzip
+          ./gradlew --no-daemon --stacktrace --warning-mode=all "${gradle_args[@]}"
+
+          if [[ ! -f "$JACOCO_REPORT_PATH" ]]; then
+            echo "::error::JaCoCo XML report was not generated at '$JACOCO_REPORT_PATH'. Configure the Gradle JaCoCo plugin and report task, or set sonar-jacoco-report-path to the generated report."
+            exit 1
           fi
 
-      - name: Verify jq
-        run: |
-          set -Eeuo pipefail
-          if command -v jq >/dev/null 2>&1; then
-            echo "jq already installed."
-            jq --version
-          else
-            echo "Installing jq..."
-            sudo apt-get update
-            sudo apt-get install -y jq
-          fi
-
-      ###################################################################
-      # Cache SonarScanner
-      ###################################################################
-
-      - name: Cache SonarScanner
-        id: sonar-cache
-        uses: actions/cache@v6.1.0
+      - name: Setup SonarScanner
+        uses: Maverick-Joy/reusable-workflows/.github/actions/setup-sonarscanner@main
         with:
-          path: ~/.sonar/sonar-scanner
-          key: sonar-scanner-${{ runner.os }}-${{ inputs.sonar-scanner-version }}
-
-      ###################################################################
-      # Install SonarScanner
-      ###################################################################
-
-      - name: Download SonarScanner
-        if: steps.sonar-cache.outputs.cache-hit != 'true'
-        run: |
-          set -Eeuo pipefail
-          mkdir -p ~/.sonar
-          VERSION="${{ inputs.sonar-scanner-version }}"
-          URL="https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-${VERSION}-linux-x64.zip"
-          echo "Downloading SonarScanner ${VERSION}"
-          curl \
-            --retry 3 \
-            --retry-delay 5 \
-            --retry-all-errors \
-            -fsSL \
-            "$URL" \
-            -o /tmp/sonar-scanner.zip
-          if [ ! -s /tmp/sonar-scanner.zip ]; then
-            echo "::error::Downloaded ZIP is empty."
-            exit 1
-          fi
-          unzip -q /tmp/sonar-scanner.zip -d ~/.sonar
-          if [ ! -d ~/.sonar/sonar-scanner-${VERSION}-linux-x64 ]; then
-            echo "::error::Extraction failed."
-            exit 1
-          fi
-          mv \
-            ~/.sonar/sonar-scanner-${VERSION}-linux-x64 \
-            ~/.sonar/sonar-scanner
-          if [ ! -x ~/.sonar/sonar-scanner/bin/sonar-scanner ]; then
-            echo "::error::sonar-scanner executable missing."
-            exit 1
-          fi
-
-      ###################################################################
-      # Configure PATH
-      ###################################################################
-
-      - name: Configure PATH
-        run: |
-          set -Eeuo pipefail
-          echo "$HOME/.sonar/sonar-scanner/bin" >> $GITHUB_PATH
-
-      ###################################################################
-      # Verify Installation
-      ###################################################################
-
-      - name: Verify SonarScanner
-        run: |
-          set -Eeuo pipefail
-          sonar-scanner --version
-
-      ###################################################################
-      # Cache Sonar Analyzer Packages
-      ###################################################################
-
-      - name: Cache Sonar Packages
-        uses: actions/cache@v6.1.0
-        with:
-          path: ~/.sonar/cache
-#          key: sonar-cache-${{ runner.os }}
-          key: sonar-cache-${{ runner.os }}-${{ inputs.sonar-scanner-version }}
-          restore-keys: |
-            sonar-cache-${{ runner.os }}
-            
-      ###################################################################
-      # Run SonarScanner
-      ###################################################################
+          scanner-version: ${{ inputs.sonar-scanner-version }}
 
       - name: Run SonarScanner
+        shell: bash
         working-directory: ${{ inputs.sonar-working-directory }}
         env:
-          SONAR_HOST_URL: ${{ env.SONAR_HOST_URL }}
-          SONAR_TOKEN: ${{ env.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_PROJECT_KEY: ${{ inputs.sonar-project-key }}
+          SONAR_PROJECT_NAME: ${{ inputs.sonar-project-name }}
+          SONAR_ORGANIZATION: ${{ inputs.sonar-organization }}
+          SONAR_SOURCES: ${{ inputs.sonar-sources }}
+          SONAR_TESTS: ${{ inputs.sonar-tests }}
+          SONAR_BINARIES: ${{ inputs.sonar-java-binaries }}
+          SONAR_TEST_BINARIES: ${{ inputs.sonar-java-test-binaries }}
+          SONAR_JUNIT_REPORT_PATH: ${{ inputs.sonar-junit-report-path }}
+          SONAR_JACOCO_REPORT_PATH: ${{ inputs.sonar-jacoco-report-path }}
+          SONAR_EXCLUSIONS: ${{ inputs.sonar-exclusions }}
+          SONAR_ADDITIONAL_ARGS: ${{ inputs.sonar-additional-args }}
         run: |
           set -Eeuo pipefail
-          sonar-scanner \
-            -Dsonar.projectKey="${{ inputs.sonar-project-key }}" \
-            -Dsonar.projectName="${{ inputs.sonar-project-name }}" \
-            -Dsonar.projectVersion="${{ github.run_number }}" \
-            -Dsonar.sources="${{ inputs.sonar-sources }}" \
-            -Dsonar.tests="${{ inputs.sonar-tests }}" \
-            -Dsonar.java.binaries="${{ inputs.sonar-java-binaries }}" \
-            -Dsonar.exclusions="${{ inputs.sonar-exclusions }}" \
-            -Dsonar.scm.provider=git \
-            -Dsonar.host.url="${SONAR_HOST_URL}" \
-            -Dsonar.token="${SONAR_TOKEN}" \
-            -Dsonar.sourceEncoding=UTF-8 \
-            ${{ inputs.sonar-additional-args }}
 
-      ###################################################################
-      # Verify report-task.txt
-      ###################################################################
-
-      - name: Verify Sonar Report
-        working-directory: ${{ inputs.sonar-working-directory }}
-        run: |
-          set -Eeuo pipefail
-          if [ ! -f ".scannerwork/report-task.txt" ]; then
-            echo "::error::.scannerwork/report-task.txt not found."
-            echo ""
-            echo "Possible reasons:"
-            echo "- SonarScanner execution failed"
-            echo "- Authentication failed"
-            echo "- Invalid project key"
-            echo "- Network issue"
-
+          if [[ ! -d "$SONAR_SOURCES" ]]; then
+            echo "::error::Sonar source directory '$SONAR_SOURCES' does not exist under '$PWD'."
+            exit 1
+          fi
+          if [[ ! -d "$SONAR_BINARIES" ]]; then
+            echo "::error::Compiled Java classes directory '$SONAR_BINARIES' does not exist under '$PWD'."
+            exit 1
+          fi
+          if [[ ! -f "$SONAR_JACOCO_REPORT_PATH" ]]; then
+            echo "::error::JaCoCo XML report '$SONAR_JACOCO_REPORT_PATH' does not exist under '$PWD'."
             exit 1
           fi
 
-      ###################################################################
-      # Read report-task.txt
-      ###################################################################
+          sonar_args=(
+            "-Dsonar.projectKey=$SONAR_PROJECT_KEY"
+            "-Dsonar.projectName=$SONAR_PROJECT_NAME"
+            "-Dsonar.projectVersion=$GITHUB_RUN_NUMBER"
+            "-Dsonar.projectBaseDir=$PWD"
+            "-Dsonar.sources=$SONAR_SOURCES"
+            "-Dsonar.java.binaries=$SONAR_BINARIES"
+            "-Dsonar.junit.reportPaths=$SONAR_JUNIT_REPORT_PATH"
+            "-Dsonar.coverage.jacoco.xmlReportPaths=$SONAR_JACOCO_REPORT_PATH"
+            "-Dsonar.scm.provider=git"
+            "-Dsonar.sourceEncoding=UTF-8"
+          )
 
-      - name: Read Sonar Task Information
-        id: sonar-task
-        working-directory: ${{ inputs.sonar-working-directory }}
-        run: |
-          set -Eeuo pipefail
-          echo "Reading report-task.txt..."
-          cat ".scannerwork/report-task.txt"
-          CE_TASK_URL=$(grep "^ceTaskUrl=" .scannerwork/report-task.txt | cut -d= -f2-)
-          DASHBOARD_URL=$(grep "^dashboardUrl=" .scannerwork/report-task.txt | cut -d= -f2-)
-          SERVER_URL=$(grep "^serverUrl=" .scannerwork/report-task.txt | cut -d= -f2-)
-          PROJECT_KEY=$(grep "^projectKey=" .scannerwork/report-task.txt | cut -d= -f2-)
-          if [ -z "$CE_TASK_URL" ]; then
-            echo "::error::Unable to determine Compute Engine task URL."
-            exit 1
+          if [[ -n "$SONAR_ORGANIZATION" ]]; then
+            sonar_args+=("-Dsonar.organization=$SONAR_ORGANIZATION")
           fi
-          echo "ce_task_url=$CE_TASK_URL" >> "$GITHUB_OUTPUT"
-          echo "dashboard_url=$DASHBOARD_URL" >> "$GITHUB_OUTPUT"
-          echo "server_url=$SERVER_URL" >> "$GITHUB_OUTPUT"
-          echo "project_key=$PROJECT_KEY" >> "$GITHUB_OUTPUT"
 
-      ###################################################################
-      # Display Analysis Details
-      ###################################################################
+          if [[ -n "$SONAR_EXCLUSIONS" ]]; then
+            sonar_args+=("-Dsonar.exclusions=$SONAR_EXCLUSIONS")
+          fi
 
-      - name: Sonar Analysis Details
-        run: |
-          set -Eeuo pipefail
-          echo "----------------------------------------"
-          echo "Project Key"
-          echo "${{ steps.sonar-task.outputs.project_key }}"
-          echo ""
-          echo "Compute Engine Task"
-          echo "${{ steps.sonar-task.outputs.ce_task_url }}"
-          echo ""
-          echo "Dashboard"
-          echo "${{ steps.sonar-task.outputs.dashboard_url }}"
-          echo "----------------------------------------"
-          
-      ###################################################################
-      # Wait for Compute Engine Task
-      ###################################################################
-
-      - name: Wait for Sonar Compute Engine
-        id: ce-task
-        env:
-          SONAR_TOKEN: ${{ env.SONAR_TOKEN }}
-        run: |
-          set -Eeuo pipefail
-          echo "Waiting for Sonar Compute Engine..."
-          CE_TASK_URL="${{ steps.sonar-task.outputs.ce_task_url }}"
-          MAX_RETRIES=60
-          SLEEP_SECONDS=5
-          RETRY=1
-          while true
-          do
-            RESPONSE=$(curl -sf \
-              -u "${SONAR_TOKEN}:" \
-              "${CE_TASK_URL}")
-            STATUS=$(echo "$RESPONSE" | jq -r '.task.status')
-            echo "Attempt ${RETRY}/${MAX_RETRIES} : ${STATUS}"
-            case "$STATUS" in
-              SUCCESS)
-                ANALYSIS_ID=$(echo "$RESPONSE" | jq -r '.task.analysisId')
-                echo "analysis_id=$ANALYSIS_ID" >> "$GITHUB_OUTPUT"
-                echo "Compute Engine completed."
-                break
-                ;;
-              FAILED)
-                echo "::error::Sonar Compute Engine task failed."
-                exit 1
-                ;;
-              CANCELED)
-                echo "::error::Sonar Compute Engine task was cancelled."
-                exit 1
-                ;;
-            esac
-            if [ "$RETRY" -ge "$MAX_RETRIES" ]; then
-              echo "::error::Timeout waiting for Sonar Compute Engine."
-              exit 1
+          if [[ -d "$SONAR_TESTS" ]]; then
+            sonar_args+=("-Dsonar.tests=$SONAR_TESTS")
+            if [[ -d "$SONAR_TEST_BINARIES" ]]; then
+              sonar_args+=("-Dsonar.java.test.binaries=$SONAR_TEST_BINARIES")
+            else
+              echo "::warning::Test binaries directory '$SONAR_TEST_BINARIES' does not exist; test binary analysis will be skipped."
             fi
-            RETRY=$((RETRY+1))
-            sleep "$SLEEP_SECONDS"
-          done
+          else
+            echo "::warning::Test source directory '$SONAR_TESTS' does not exist; test source analysis will be skipped."
+          fi
 
-      ###################################################################
-      # Check Quality Gate
-      ###################################################################
+          if [[ -n "$SONAR_ADDITIONAL_ARGS" ]]; then
+            read -r -a additional_args <<< "$SONAR_ADDITIONAL_ARGS"
+            sonar_args+=("${additional_args[@]}")
+          fi
 
-      - name: Verify Quality Gate
-        env:
-          SONAR_TOKEN: ${{ env.SONAR_TOKEN }}
-          SONAR_HOST_URL: ${{ env.SONAR_HOST_URL }}
+          sonar-scanner "${sonar_args[@]}"
+
+      - name: Verify Sonar Task Metadata
+        shell: bash
         run: |
           set -Eeuo pipefail
-          ANALYSIS_ID="${{ steps.ce-task.outputs.analysis_id }}"
-          QUALITY_GATE_URL="${SONAR_HOST_URL}/api/qualitygates/project_status?analysisId=${ANALYSIS_ID}"
-          RESPONSE=$(curl -sf \
-            -u "${SONAR_TOKEN}:" \
-            "$QUALITY_GATE_URL")
-          STATUS=$(echo "$RESPONSE" \
-            | jq -r '.projectStatus.status')
-          echo ""
-          echo "========================================="
-          echo "Quality Gate Status : ${STATUS}"
-          echo "========================================="
-          if [ "$STATUS" != "OK" ]; then
-            echo ""
-            echo "Conditions"
-            echo "$RESPONSE" \
-              | jq -r '.projectStatus.conditions[] |
-                "- " + .metricKey +
-                " : " +
-                .status +
-                " (Actual=" +
-                (.actualValue // "N/A") +
-                ", ErrorThreshold=" +
-                (.errorThreshold // "N/A") +
-                ")"'
-            echo ""
-            echo "::error::Quality Gate Failed."
+
+          if [[ ! -s "$SONAR_WORKING_DIRECTORY/.scannerwork/report-task.txt" ]]; then
+            echo "::error::Sonar task metadata was not created in '$SONAR_WORKING_DIRECTORY/.scannerwork/report-task.txt'."
             exit 1
           fi
-          echo "Quality Gate Passed."
+        env:
+          SONAR_WORKING_DIRECTORY: ${{ inputs.sonar-working-directory }}
 
-      ###################################################################
-      # Export Quality Gate Status
-      ###################################################################
-
-      - name: Export Quality Gate
-        if: always()
-        run: |
-          set -Eeuo pipefail
-          echo "QUALITY_GATE_STATUS=OK" >> $GITHUB_ENV
-          
-      ###################################################################
-      # Upload Test Reports
-      ###################################################################
+      - name: Verify SonarQube Quality Gate
+        id: quality-gate
+        uses: Maverick-Joy/reusable-workflows/.github/actions/sonarqube-quality-gate@main
+        with:
+          sonar-host-url: ${{ secrets.SONAR_HOST_URL }}
+          sonar-token: ${{ secrets.SONAR_TOKEN }}
+          timeout: ${{ inputs.quality-gate-timeout }}
+          polling-interval: ${{ inputs.quality-gate-polling-interval }}
+          working-directory: ${{ inputs.sonar-working-directory }}
 
       - name: Upload Test Reports
         if: always()
@@ -531,12 +374,8 @@ jobs:
           retention-days: ${{ inputs.artifact-retention-days }}
           if-no-files-found: warn
           path: |
-            build/reports/tests/**
-            build/test-results/**
-
-      ###################################################################
-      # Upload JaCoCo Coverage Report
-      ###################################################################
+            ${{ inputs.sonar-working-directory }}/build/reports/tests/**
+            ${{ inputs.sonar-working-directory }}/build/test-results/**
 
       - name: Upload JaCoCo Coverage Report
         if: always()
@@ -545,92 +384,64 @@ jobs:
           name: ${{ inputs.coverage-report-artifact-name }}
           retention-days: ${{ inputs.artifact-retention-days }}
           if-no-files-found: warn
-          path: |
-            build/reports/jacoco/**
-            build/jacoco/**
+          path: ${{ inputs.sonar-working-directory }}/${{ inputs.sonar-jacoco-report-path }}
 
-      ###################################################################
-      # Upload Sonar Task File
-      ###################################################################
-
-      - name: Upload Sonar Scanner Files
+      - name: Upload Sonar Task Metadata
         if: always()
         uses: actions/upload-artifact@v7.0.1
         with:
           name: sonar-scanner-files
-          retention-days: 60
+          retention-days: ${{ inputs.artifact-retention-days }}
           if-no-files-found: ignore
-          path: |
-            ${{ inputs.sonar-working-directory }}/.scannerwork/**
-
-      ###################################################################
-      # Workflow Summary
-      ###################################################################
+          path: ${{ inputs.sonar-working-directory }}/.scannerwork/**
 
       - name: Generate GitHub Summary
         if: always()
+        shell: bash
+        env:
+          JOB_STATUS: ${{ job.status }}
+          GATE_STATUS: ${{ steps.quality-gate.outputs.quality-gate-status }}
+          DASHBOARD_URL: ${{ steps.quality-gate.outputs.dashboard-url }}
+          PROJECT_NAME: ${{ inputs.sonar-project-name }}
+          PROJECT_KEY: ${{ inputs.sonar-project-key }}
+          WORKING_DIRECTORY: ${{ inputs.sonar-working-directory }}
+          GRADLE_COMMAND: ${{ inputs.gradle-command }}
+          SONAR_SCANNER_VERSION: ${{ inputs.sonar-scanner-version }}
+          JAVA_VERSION: ${{ inputs.java-version }}
+          RUNNER_NAME: ${{ runner.name }}
+          BRANCH_NAME: ${{ github.ref_name }}
+          COMMIT_SHA: ${{ github.sha }}
+          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -Eeuo pipefail
+
+          sanitize_markdown_cell() {
+            local value="${1//$'\n'/ }"
+            value="${value//$'\r'/ }"
+            value="${value//|/\\|}"
+            printf '%s' "$value"
+          }
+
+          if [[ "$JOB_STATUS" == "success" ]]; then
+            result="Succeeded"
+          else
+            result="Failed"
+          fi
+
           {
-            echo "# SonarQube Analysis Summary"
-            echo ""
-            echo "| Property | Value |"
-            echo "|----------|-------|"
-            echo "| Repository | ${{ github.repository }} |"
-            echo "| Workflow | ${{ github.workflow }} |"
-            echo "| Run ID | ${{ github.run_id }} |"
-            echo "| Run Number | ${{ github.run_number }} |"
-            echo "| Runner | ${{ runner.name }} |"
-            echo "| SonarScanner Version | ${{ inputs.sonar-scanner-version }} |"
-            echo "| Branch | ${{ github.ref_name }} |"
-            echo "| Commit | ${{ github.sha }} |"
-            echo "| Runner | ${{ runner.name }} |"
-            echo "| Java Version | ${{ inputs.java-version }} |"
-            echo "| Gradle Command | ${{ inputs.gradle-command }} |"
-            echo "| Sonar Project | ${{ inputs.sonar-project-name }} |"
-            echo "| Project Key | ${{ inputs.sonar-project-key }} |"
-            echo "| Sonar Sources | ${{ inputs.sonar-sources }} |"
-            echo "| Sonar Tests | ${{ inputs.sonar-tests }} |"
-            echo "| Sonar Binaries | ${{ inputs.sonar-java-binaries }} |"
-            echo "| Sonar Exclusions | ${{ inputs.sonar-exclusions }} |"
-            echo "| Working Directory | ${{ inputs.sonar-working-directory }} |"
-            echo "| Quality Gate | Passed ✅ |"
-            echo "| Dashboard | ${{ steps.sonar-task.outputs.dashboard_url }} |"
-            echo "| Workflow Run URL | https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }} |"
+            printf '# SonarQube Analysis %s\n\n' "$result"
+            printf '| Property | Value |\n'
+            printf '|----------|-------|\n'
+            printf '| Project | %s |\n' "$(sanitize_markdown_cell "$PROJECT_NAME")"
+            printf '| Project Key | %s |\n' "$(sanitize_markdown_cell "$PROJECT_KEY")"
+            printf '| Quality Gate | %s |\n' "$(sanitize_markdown_cell "${GATE_STATUS:-NOT_COMPLETED}")"
+            printf '| Dashboard | %s |\n' "$(sanitize_markdown_cell "${DASHBOARD_URL:-NOT_AVAILABLE}")"
+            printf '| Branch | %s |\n' "$(sanitize_markdown_cell "$BRANCH_NAME")"
+            printf '| Commit | `%s` |\n' "$(sanitize_markdown_cell "$COMMIT_SHA")"
+            printf '| Runner | %s |\n' "$(sanitize_markdown_cell "${RUNNER_NAME:-unknown}")"
+            printf '| Java | %s |\n' "$(sanitize_markdown_cell "$JAVA_VERSION")"
+            printf '| SonarScanner | %s |\n' "$(sanitize_markdown_cell "$SONAR_SCANNER_VERSION")"
+            printf '| Gradle command | `%s` |\n' "$(sanitize_markdown_cell "$GRADLE_COMMAND")"
+            printf '| Working directory | `%s` |\n' "$(sanitize_markdown_cell "$WORKING_DIRECTORY")"
+            printf '| Workflow run | %s |\n' "$RUN_URL"
           } >> "$GITHUB_STEP_SUMMARY"
-
-      ###################################################################
-      # Final Success Message
-      ###################################################################
-
-      - name: Success
-        if: success()
-        run: |
-          set -Eeuo pipefail
-          echo ""
-          echo "============================================="
-          echo " SonarQube Analysis Completed Successfully"
-          echo "============================================="
-          echo ""
-          echo "Project : ${{ inputs.sonar-project-name }}"
-          echo "Branch  : ${{ github.ref_name }}"
-          echo ""
-          echo "Dashboard:"
-          echo "${{ steps.sonar-task.outputs.dashboard_url }}"
-          echo ""
-
-      ###################################################################
-      # Final Failure Message
-      ###################################################################
-
-      - name: Failure
-        if: failure()
-        run: |
-          set -Eeuo pipefail
-          echo ""
-          echo "============================================="
-          echo " SonarQube Analysis Failed"
-          echo "============================================="
-          echo ""
-          echo "Please check the previous logs."
-          echo ""

@@ -17,9 +17,15 @@ on:
         type: string
 
       maven-command:
-        description: Maven command
+        description: Maven goals and arguments (space-separated; not a shell command)
         required: false
         default: "clean verify"
+        type: string
+
+      sonar-scanner-version:
+        description: SonarScanner CLI version
+        required: false
+        default: "7.2.0.5079"
         type: string
 
       sonar-project-key:
@@ -74,6 +80,18 @@ on:
         default: "target/site/jacoco/jacoco.xml"
         type: string
 
+      timeout:
+        description: Maximum wait time for SonarQube analysis, in seconds
+        required: false
+        default: 300
+        type: number
+
+      polling-interval:
+        description: Polling interval for SonarQube analysis, in seconds
+        required: false
+        default: 5
+        type: number
+
     secrets:
       SONAR_TOKEN:
         required: true
@@ -84,7 +102,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: sonarqube-maven-${{ github.ref }}
+  group: sonarqube-maven-${{ github.workflow }}-${{ inputs.sonar-project-key }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -97,6 +115,8 @@ jobs:
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
 
       - name: Setup Java
         uses: actions/setup-java@v5
@@ -115,35 +135,105 @@ jobs:
 
       - name: Setup SonarScanner
         uses: Maverick-Joy/reusable-workflows/.github/actions/setup-sonarscanner@main
-
-      - name: Grant Execute Permission
-        run: chmod +x mvnw
+        with:
+          scanner-version: ${{ inputs.sonar-scanner-version }}
 
       - name: Build & Generate JaCoCo Report
+        shell: bash
+        env:
+          MAVEN_COMMAND: ${{ inputs.maven-command }}
+          JACOCO_REPORT_PATH: ${{ inputs.jacoco-report-path }}
         run: |
-          ./mvnw ${{ inputs.maven-command }}
+          set -Eeuo pipefail
+
+          if [[ ! -f ./mvnw ]]; then
+            echo "::error::Maven wrapper (mvnw) was not found in the repository root."
+            exit 1
+          fi
+
+          chmod +x ./mvnw
+          read -r -a maven_args <<< "$MAVEN_COMMAND"
+          if (( ${#maven_args[@]} == 0 )); then
+            echo "::error::maven-command must contain at least one Maven goal or argument."
+            exit 1
+          fi
+
+          ./mvnw "${maven_args[@]}"
+
+          if [[ ! -f "$JACOCO_REPORT_PATH" ]]; then
+            echo "::error::JaCoCo XML report was not generated at '$JACOCO_REPORT_PATH'. Configure the Maven JaCoCo plugin to generate this report during the build."
+            exit 1
+          fi
 
       - name: Run SonarScanner
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+          SONAR_PROJECT_KEY: ${{ inputs.sonar-project-key }}
+          SONAR_PROJECT_NAME: ${{ inputs.sonar-project-name }}
+          SONAR_ORGANIZATION: ${{ inputs.sonar-organization }}
+          SONAR_SOURCE_DIRECTORY: ${{ inputs.source-directory }}
+          SONAR_TEST_DIRECTORY: ${{ inputs.test-directory }}
+          SONAR_BINARIES_DIRECTORY: ${{ inputs.binaries-directory }}
+          SONAR_TEST_BINARIES_DIRECTORY: ${{ inputs.test-binaries-directory }}
+          SONAR_JUNIT_REPORT_PATH: ${{ inputs.junit-report-path }}
+          SONAR_JACOCO_REPORT_PATH: ${{ inputs.jacoco-report-path }}
         shell: bash
         run: |
-          EXTRA_ARGS=""
-          if [ -n "${{ inputs.sonar-organization }}" ]; then
-            EXTRA_ARGS="$EXTRA_ARGS -Dsonar.organization=${{ inputs.sonar-organization }}"
+          set -Eeuo pipefail
+
+          if [[ ! -d "$SONAR_SOURCE_DIRECTORY" ]]; then
+            echo "::error::Sonar source directory '$SONAR_SOURCE_DIRECTORY' does not exist."
+            exit 1
           fi
-          sonar-scanner \
-            -Dsonar.projectKey="${{ inputs.sonar-project-key }}" \
-            -Dsonar.projectName="${{ inputs.sonar-project-name }}" \
-            -Dsonar.host.url="${SONAR_HOST_URL}" \
-            -Dsonar.token="${SONAR_TOKEN}" \
-            -Dsonar.sources="${{ inputs.source-directory }}" \
-            -Dsonar.tests="${{ inputs.test-directory }}" \
-            -Dsonar.java.binaries="target/classes" \
-            -Dsonar.junit.reportPaths="target/surefire-reports" \
-            -Dsonar.coverage.jacoco.xmlReportPaths="target/site/jacoco/jacoco.xml" \
-            $EXTRA_ARGS
+          if [[ ! -d "$SONAR_BINARIES_DIRECTORY" ]]; then
+            echo "::error::Compiled Java classes directory '$SONAR_BINARIES_DIRECTORY' does not exist."
+            exit 1
+          fi
+
+          sonar_args=(
+            "-Dsonar.projectKey=$SONAR_PROJECT_KEY"
+            "-Dsonar.projectName=$SONAR_PROJECT_NAME"
+            "-Dsonar.host.url=$SONAR_HOST_URL"
+            "-Dsonar.sources=$SONAR_SOURCE_DIRECTORY"
+            "-Dsonar.java.binaries=$SONAR_BINARIES_DIRECTORY"
+            "-Dsonar.junit.reportPaths=$SONAR_JUNIT_REPORT_PATH"
+            "-Dsonar.coverage.jacoco.xmlReportPaths=$SONAR_JACOCO_REPORT_PATH"
+          )
+
+          if [[ -n "$SONAR_ORGANIZATION" ]]; then
+            sonar_args+=("-Dsonar.organization=$SONAR_ORGANIZATION")
+          fi
+
+          if [[ -d "$SONAR_TEST_DIRECTORY" ]]; then
+            sonar_args+=("-Dsonar.tests=$SONAR_TEST_DIRECTORY")
+            if [[ -d "$SONAR_TEST_BINARIES_DIRECTORY" ]]; then
+              sonar_args+=("-Dsonar.java.test.binaries=$SONAR_TEST_BINARIES_DIRECTORY")
+            else
+              echo "::warning::Test classes directory '$SONAR_TEST_BINARIES_DIRECTORY' was not found; test binaries will not be analyzed."
+            fi
+          else
+            echo "::warning::Test source directory '$SONAR_TEST_DIRECTORY' was not found; test sources will not be analyzed."
+          fi
+
+          sonar-scanner "${sonar_args[@]}"
+
+      - name: Validate Quality Gate Timing
+        shell: bash
+        env:
+          SONAR_TIMEOUT: ${{ inputs.timeout }}
+          SONAR_POLLING_INTERVAL: ${{ inputs.polling-interval }}
+        run: |
+          set -Eeuo pipefail
+
+          if [[ ! "$SONAR_TIMEOUT" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::timeout must be a positive whole number of seconds."
+            exit 1
+          fi
+          if [[ ! "$SONAR_POLLING_INTERVAL" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::polling-interval must be a positive whole number of seconds."
+            exit 1
+          fi
 
       - name: Verify SonarQube Quality Gate
         id: quality-gate
@@ -166,28 +256,51 @@ jobs:
         uses: actions/upload-artifact@v7.0.1
         with:
           name: maven-test-report
-          path: |
-            target/surefire-reports/**
+          path: ${{ inputs.junit-report-path }}/**
 
       - name: Upload JaCoCo Report
         if: always()
         uses: actions/upload-artifact@v7.0.1
         with:
           name: maven-jacoco-report
-          path: |
-            target/site/jacoco/**
+          path: ${{ inputs.jacoco-report-path }}
 
       - name: GitHub Step Summary
         if: always()
         shell: bash
+        env:
+          JOB_STATUS: ${{ job.status }}
+          PROJECT_NAME: ${{ inputs.sonar-project-name }}
+          PROJECT_KEY: ${{ inputs.sonar-project-key }}
+          JAVA_VERSION: ${{ inputs.java-version }}
+          JACOCO_REPORT_PATH: ${{ inputs.jacoco-report-path }}
         run: |
-          echo "# SonarQube Scan Completed" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
-          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Project | ${{ inputs.sonar-project-name }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Project Key | ${{ inputs.sonar-project-key }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Java | ${{ inputs.java-version }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Build Tool | Maven |" >> $GITHUB_STEP_SUMMARY
-          echo "| JaCoCo | Enabled |" >> $GITHUB_STEP_SUMMARY
-          echo "| SonarScanner | CLI |" >> $GITHUB_STEP_SUMMARY
+          set -Eeuo pipefail
+
+          project_name="${PROJECT_NAME//$'\n'/ }"
+          project_name="${project_name//$'\r'/ }"
+          project_name="${project_name//|/\\|}"
+          project_key="${PROJECT_KEY//$'\n'/ }"
+          project_key="${project_key//$'\r'/ }"
+          project_key="${project_key//|/\\|}"
+          jacoco_path="${JACOCO_REPORT_PATH//$'\n'/ }"
+          jacoco_path="${jacoco_path//$'\r'/ }"
+          jacoco_path="${jacoco_path//|/\\|}"
+
+          if [[ "$JOB_STATUS" == "success" ]]; then
+            heading="SonarQube Scan Succeeded"
+          else
+            heading="SonarQube Scan Failed"
+          fi
+
+          {
+            printf '# %s\n\n' "$heading"
+            printf '| Property | Value |\n'
+            printf '|----------|-------|\n'
+            printf '| Project | %s |\n' "$project_name"
+            printf '| Project Key | %s |\n' "$project_key"
+            printf '| Java | %s |\n' "$JAVA_VERSION"
+            printf '| Build Tool | Maven |\n'
+            printf '| JaCoCo XML Report | `%s` |\n' "$jacoco_path"
+            printf '| SonarScanner | CLI |\n'
+          } >> "$GITHUB_STEP_SUMMARY"
