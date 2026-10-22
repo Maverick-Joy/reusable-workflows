@@ -175,6 +175,8 @@ jobs:
           SONAR_BINARIES: ${{ inputs.sonar-java-binaries }}
           SONAR_PROJECT_KEY: ${{ inputs.sonar-project-key }}
           SONAR_PROJECT_NAME: ${{ inputs.sonar-project-name }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SCANNER_VERSION: ${{ inputs.sonar-scanner-version }}
           GATE_TIMEOUT: ${{ inputs.quality-gate-timeout }}
           GATE_POLLING_INTERVAL: ${{ inputs.quality-gate-polling-interval }}
@@ -194,6 +196,15 @@ jobs:
 
           if [[ -z "$SONAR_PROJECT_KEY" || -z "$SONAR_PROJECT_NAME" || -z "$SONAR_SOURCES" || -z "$SONAR_BINARIES" ]]; then
             echo "::error::Project key, project name, source directory, and binaries directory must not be empty."
+            exit 1
+          fi
+
+          if [[ ! "$SONAR_HOST_URL" =~ ^https?://[^[:space:]]+$ ]]; then
+            echo "::error::SONAR_HOST_URL must be an absolute URL beginning with http:// or https://. For SonarCloud, use https://sonarcloud.io."
+            exit 1
+          fi
+          if [[ -z "$SONAR_TOKEN" ]]; then
+            echo "::error::SONAR_TOKEN is empty. Pass a valid SonarQube token to this reusable workflow."
             exit 1
           fi
 
@@ -310,6 +321,7 @@ jobs:
             "-Dsonar.projectName=$SONAR_PROJECT_NAME"
             "-Dsonar.projectVersion=$GITHUB_RUN_NUMBER"
             "-Dsonar.projectBaseDir=$PWD"
+            "-Dsonar.host.url=${SONAR_HOST_URL%/}"
             "-Dsonar.sources=$SONAR_SOURCES"
             "-Dsonar.java.binaries=$SONAR_BINARIES"
             "-Dsonar.junit.reportPaths=$SONAR_JUNIT_REPORT_PATH"
