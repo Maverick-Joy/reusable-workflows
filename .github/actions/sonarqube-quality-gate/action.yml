@@ -1,0 +1,212 @@
+name: SonarQube Quality Gate
+
+description: >
+  Waits for the SonarQube Compute Engine task to complete and verifies
+  the Quality Gate status for the exact analysis triggered by the current workflow.
+
+inputs:
+  sonar-host-url:
+    description: SonarQube Server URL
+    required: true
+
+  sonar-token:
+    description: SonarQube Authentication Token
+    required: true
+
+  timeout:
+    description: Maximum wait time in seconds
+    required: false
+    default: "300"
+
+  polling-interval:
+    description: Polling interval in seconds
+    required: false
+    default: "5"
+
+outputs:
+  quality-gate-status:
+    description: Final Quality Gate status
+    value: ${{ steps.quality.outputs.status }}
+
+  analysis-id:
+    description: Sonar Analysis ID
+    value: ${{ steps.analysis.outputs.analysis-id }}
+
+  ce-task-id:
+    description: Sonar Compute Engine Task ID
+    value: ${{ steps.task.outputs.ce-task-id }}
+
+  dashboard-url:
+    description: Sonar Dashboard URL
+    value: ${{ steps.task.outputs.dashboard-url }}
+
+runs:
+  using: composite
+
+  steps:
+
+    ####################################################################
+    # Read Sonar Report
+    ####################################################################
+
+    - name: Read Sonar Task Information
+      id: task
+      shell: bash
+      run: |
+
+        REPORT_FILE=".scannerwork/report-task.txt"
+
+        if [ ! -f "$REPORT_FILE" ]; then
+          echo "::error::Unable to locate $REPORT_FILE"
+          exit 1
+        fi
+
+        CE_TASK_ID=$(grep '^ceTaskId=' "$REPORT_FILE" | cut -d= -f2)
+        DASHBOARD_URL=$(grep '^dashboardUrl=' "$REPORT_FILE" | cut -d= -f2)
+
+        if [ -z "$CE_TASK_ID" ]; then
+          echo "::error::Unable to determine Compute Engine Task ID."
+          exit 1
+        fi
+
+        echo "Compute Engine Task ID : $CE_TASK_ID"
+        echo "Dashboard URL          : $DASHBOARD_URL"
+
+        echo "ce-task-id=$CE_TASK_ID" >> "$GITHUB_OUTPUT"
+        echo "dashboard-url=$DASHBOARD_URL" >> "$GITHUB_OUTPUT"
+
+    ####################################################################
+    # Wait for Compute Engine
+    ####################################################################
+
+    - name: Wait for Compute Engine
+      id: analysis
+      shell: bash
+      env:
+        SONAR_HOST_URL: ${{ inputs.sonar-host-url }}
+        SONAR_TOKEN: ${{ inputs.sonar-token }}
+      run: |
+
+        ELAPSED=0
+
+        while [ "$ELAPSED" -lt "${{ inputs.timeout }}" ]
+        do
+
+          RESPONSE=$(curl -s \
+            -u "${SONAR_TOKEN}:" \
+            "${SONAR_HOST_URL}/api/ce/task?id=${{ steps.task.outputs.ce-task-id }}")
+
+          STATUS=$(echo "$RESPONSE" | jq -r '.task.status')
+
+          echo "Current Status : $STATUS"
+
+          case "$STATUS" in
+
+            SUCCESS)
+
+              ANALYSIS_ID=$(echo "$RESPONSE" | jq -r '.task.analysisId')
+
+              echo "analysis-id=$ANALYSIS_ID" >> "$GITHUB_OUTPUT"
+
+              echo "Analysis completed."
+
+              exit 0
+              ;;
+
+            PENDING|IN_PROGRESS)
+
+              sleep "${{ inputs.polling-interval }}"
+
+              ELAPSED=$((ELAPSED + ${{ inputs.polling-interval }}))
+              ;;
+
+            FAILED)
+
+              echo "::error::Sonar Compute Engine Task Failed."
+
+              echo "$RESPONSE"
+
+              exit 1
+              ;;
+
+            CANCELED)
+
+              echo "::error::Sonar Compute Engine Task Cancelled."
+
+              exit 1
+              ;;
+
+            *)
+
+              echo "::error::Unexpected Compute Engine Status : $STATUS"
+
+              echo "$RESPONSE"
+
+              exit 1
+              ;;
+
+          esac
+
+        done
+
+        echo "::error::Timed out waiting for Sonar analysis."
+
+        exit 1
+
+    ####################################################################
+    # Verify Quality Gate
+    ####################################################################
+
+    - name: Verify Quality Gate
+      id: quality
+      shell: bash
+      env:
+        SONAR_HOST_URL: ${{ inputs.sonar-host-url }}
+        SONAR_TOKEN: ${{ inputs.sonar-token }}
+      run: |
+
+        RESPONSE=$(curl -s \
+          -u "${SONAR_TOKEN}:" \
+          "${SONAR_HOST_URL}/api/qualitygates/project_status?analysisId=${{ steps.analysis.outputs.analysis-id }}")
+
+        STATUS=$(echo "$RESPONSE" | jq -r '.projectStatus.status')
+
+        CONDITIONS=$(echo "$RESPONSE" | jq -r '.projectStatus.conditions[]? | "\(.metricKey): \(.status)"')
+
+        echo "Quality Gate Status : $STATUS"
+
+        echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+
+        if [ "$STATUS" != "OK" ]; then
+
+          echo ""
+          echo "Failed Conditions"
+          echo "-----------------"
+          echo "$CONDITIONS"
+
+          echo "::error::Quality Gate Failed."
+
+          exit 1
+
+        fi
+
+        echo "Quality Gate Passed."
+
+    ####################################################################
+    # GitHub Summary
+    ####################################################################
+
+    - name: Publish Summary
+      shell: bash
+      run: |
+
+        {
+          echo "# SonarQube Quality Gate"
+          echo ""
+          echo "| Property | Value |"
+          echo "|----------|-------|"
+          echo "| Compute Engine Task | ${{ steps.task.outputs.ce-task-id }} |"
+          echo "| Analysis ID | ${{ steps.analysis.outputs.analysis-id }} |"
+          echo "| Quality Gate | ${{ steps.quality.outputs.status }} |"
+          echo "| Dashboard | ${{ steps.task.outputs.dashboard-url }} |"
+        } >> "$GITHUB_STEP_SUMMARY"

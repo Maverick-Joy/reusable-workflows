@@ -1,0 +1,150 @@
+name: Build (Maven)
+
+on:
+  workflow_call:
+
+    inputs:
+
+      java-version:
+        description: Java version
+        required: false
+        default: "21"
+        type: string
+
+      distribution:
+        description: JDK Distribution
+        required: false
+        default: "temurin"
+        type: string
+
+      maven-command:
+        description: Maven build command
+        required: false
+        default: "clean package -DskipTests"
+        type: string
+
+      upload-artifact:
+        description: Upload build artifacts
+        required: false
+        default: true
+        type: boolean
+
+      artifact-name:
+        description: Artifact name
+        required: false
+        default: maven-build
+        type: string
+
+      artifact-path:
+        description: Build artifact path
+        required: false
+        default: target/*.jar
+        type: string
+
+    outputs:
+
+      artifact-name:
+        description: Uploaded artifact name
+        value: ${{ jobs.build.outputs.artifact-name }}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-maven-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+
+  build:
+
+    name: Maven Build
+
+    runs-on: ubuntu-26.04
+
+    timeout-minutes: 30
+
+    outputs:
+      artifact-name: ${{ steps.outputs.outputs.artifact-name }}
+
+    steps:
+
+      ####################################################################
+      # Checkout Repository
+      ####################################################################
+
+      - name: Checkout Repository
+        uses: actions/checkout@v7.0.1
+
+      ####################################################################
+      # Setup Java
+      ####################################################################
+
+      - name: Setup Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: ${{ inputs.distribution }}
+          java-version: ${{ inputs.java-version }}
+          cache: maven
+
+      ####################################################################
+      # Verify Maven
+      ####################################################################
+
+      - name: Verify Maven
+        run: |
+          mvn --version
+
+      ####################################################################
+      # Build Project
+      ####################################################################
+
+      - name: Build Project
+        run: |
+          mvn ${{ inputs.maven-command }}
+
+      ####################################################################
+      # Upload Build Artifact
+      ####################################################################
+
+      - name: Upload Build Artifact
+        if: inputs.upload-artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.artifact-name }}
+          path: ${{ inputs.artifact-path }}
+          if-no-files-found: error
+          retention-days: 7
+
+      ####################################################################
+      # Outputs
+      ####################################################################
+
+      - name: Set Outputs
+        id: outputs
+        run: |
+          echo "artifact-name=${{ inputs.artifact-name }}" >> "$GITHUB_OUTPUT"
+
+      ####################################################################
+      # GitHub Summary
+      ####################################################################
+
+      - name: Publish Summary
+        if: always()
+        run: |
+          {
+            echo "# Maven Build"
+            echo ""
+            echo "| Property | Value |"
+            echo "|----------|-------|"
+            echo "| Java | ${{ inputs.java-version }} |"
+            echo "| Distribution | ${{ inputs.distribution }} |"
+            echo "| Build Command | \`${{ inputs.maven-command }}\` |"
+            echo "| Artifact | ${{ inputs.artifact-name }} |"
+            echo "| Upload Artifact | ${{ inputs.upload-artifact }} |"
+            echo "| Status | ${{ job.status }} |"
+          } >> "$GITHUB_STEP_SUMMARY"

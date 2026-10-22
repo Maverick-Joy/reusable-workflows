@@ -1,0 +1,193 @@
+name: SonarQube Scan (Maven)
+
+on:
+  workflow_call:
+
+    inputs:
+      java-version:
+        description: Java Version
+        required: false
+        default: "21"
+        type: string
+
+      distribution:
+        description: JDK Distribution
+        required: false
+        default: "temurin"
+        type: string
+
+      maven-command:
+        description: Maven command
+        required: false
+        default: "clean verify"
+        type: string
+
+      sonar-project-key:
+        description: Sonar Project Key
+        required: true
+        type: string
+
+      sonar-project-name:
+        description: Sonar Project Name
+        required: true
+        type: string
+
+      sonar-organization:
+        description: SonarCloud Organization (Optional)
+        required: false
+        default: ""
+        type: string
+
+      source-directory:
+        description: Source directory
+        required: false
+        default: "src/main/java"
+        type: string
+
+      test-directory:
+        description: Test directory
+        required: false
+        default: "src/test/java"
+        type: string
+
+      binaries-directory:
+        description: Java compiled classes directory
+        required: false
+        default: "target/classes"
+        type: string
+
+      test-binaries-directory:
+        description: Test compiled classes directory
+        required: false
+        default: "target/test-classes"
+        type: string
+
+      junit-report-path:
+        description: JUnit XML report directory
+        required: false
+        default: "target/surefire-reports"
+        type: string
+
+      jacoco-report-path:
+        description: JaCoCo XML report
+        required: false
+        default: "target/site/jacoco/jacoco.xml"
+        type: string
+
+    secrets:
+      SONAR_TOKEN:
+        required: true
+      SONAR_HOST_URL:
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sonarqube-maven-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+
+  maven-sonarqube-scan-job:
+    name: SonarQube Analysis
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: ${{ inputs.distribution }}
+          java-version: ${{ inputs.java-version }}
+          cache: maven
+
+      - name: Cache Sonar Packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.sonar/cache
+          key: sonar-cache-${{ runner.os }}
+          restore-keys: |
+            sonar-cache-${{ runner.os }}
+
+      - name: Setup SonarScanner
+        uses: Maverick-Joy/reusable-workflows/.github/actions/setup-sonarscanner@main
+
+      - name: Grant Execute Permission
+        run: chmod +x mvnw
+
+      - name: Build & Generate JaCoCo Report
+        run: |
+          ./mvnw ${{ inputs.maven-command }}
+
+      - name: Run SonarScanner
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+        shell: bash
+        run: |
+          EXTRA_ARGS=""
+          if [ -n "${{ inputs.sonar-organization }}" ]; then
+            EXTRA_ARGS="$EXTRA_ARGS -Dsonar.organization=${{ inputs.sonar-organization }}"
+          fi
+          sonar-scanner \
+            -Dsonar.projectKey="${{ inputs.sonar-project-key }}" \
+            -Dsonar.projectName="${{ inputs.sonar-project-name }}" \
+            -Dsonar.host.url="${SONAR_HOST_URL}" \
+            -Dsonar.token="${SONAR_TOKEN}" \
+            -Dsonar.sources="${{ inputs.source-directory }}" \
+            -Dsonar.tests="${{ inputs.test-directory }}" \
+            -Dsonar.java.binaries="target/classes" \
+            -Dsonar.junit.reportPaths="target/surefire-reports" \
+            -Dsonar.coverage.jacoco.xmlReportPaths="target/site/jacoco/jacoco.xml" \
+            $EXTRA_ARGS
+
+      - name: Verify SonarQube Quality Gate
+        id: quality-gate
+        uses: Maverick-Joy/reusable-workflows/.github/actions/sonarqube-quality-gate@main
+        with:
+          sonar-host-url: ${{ secrets.SONAR_HOST_URL }}
+          sonar-token: ${{ secrets.SONAR_TOKEN }}
+          timeout: ${{ inputs.timeout }}
+          polling-interval: ${{ inputs.polling-interval }}
+
+      - name: Upload Sonar Task Metadata
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sonar-task
+          path: .scannerwork/report-task.txt
+
+      - name: Upload Test Reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: maven-test-report
+          path: |
+            target/surefire-reports/**
+
+      - name: Upload JaCoCo Report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: maven-jacoco-report
+          path: |
+            target/site/jacoco/**
+
+      - name: GitHub Step Summary
+        if: always()
+        shell: bash
+        run: |
+          echo "# SonarQube Scan Completed" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Project | ${{ inputs.sonar-project-name }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Project Key | ${{ inputs.sonar-project-key }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Java | ${{ inputs.java-version }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Build Tool | Maven |" >> $GITHUB_STEP_SUMMARY
+          echo "| JaCoCo | Enabled |" >> $GITHUB_STEP_SUMMARY
+          echo "| SonarScanner | CLI |" >> $GITHUB_STEP_SUMMARY

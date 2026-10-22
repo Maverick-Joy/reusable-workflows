@@ -1,0 +1,104 @@
+name: Unit Test (Maven)
+
+on:
+  workflow_call:
+    inputs:
+      java-version:
+        description: Java version
+        required: false
+        default: "21"
+        type: string
+      distribution:
+        description: JDK distribution
+        required: false
+        default: "temurin"
+        type: string
+      maven-command:
+        description: Maven test command
+        required: false
+        default: "clean test"
+        type: string
+      upload-artifacts:
+        description: Upload reports
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+  checks: write
+  pull-requests: write
+
+concurrency:
+  group: unit-test-maven-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  unit-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: ${{ inputs.distribution }}
+          java-version: ${{ inputs.java-version }}
+          cache: maven
+
+      - name: Verify Maven
+        run: mvn --version
+
+      - name: Execute Unit Tests
+        run: mvn ${{ inputs.maven-command }}
+
+      - name: Publish Unit Test Results
+        if: always()
+        uses: EnricoMi/publish-unit-test-result-action@v2
+        with:
+          files: |
+            **/target/surefire-reports/*.xml
+            **/target/failsafe-reports/*.xml
+
+      - name: Upload Test Results
+        if: always() && inputs.upload-artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: maven-test-results
+          path: |
+            **/target/surefire-reports/**
+            **/target/failsafe-reports/**
+            **/target/site/**
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload JaCoCo Report
+        if: always() && inputs.upload-artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: maven-jacoco-report
+          path: |
+            **/target/site/jacoco/**
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: GitHub Summary
+        if: always()
+        run: |
+          {
+            echo "# Maven Unit Test Summary"
+            echo ""
+            echo "| Property | Value |"
+            echo "|---|---|"
+            echo "| Java | ${{ inputs.java-version }} |"
+            echo "| Distribution | ${{ inputs.distribution }} |"
+            echo "| Command | `${{ inputs.maven-command }}` |"
+            echo "| Status | ${{ job.status }} |"
+          } >> "$GITHUB_STEP_SUMMARY"
